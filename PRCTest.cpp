@@ -147,16 +147,18 @@ struct Box : IMesh
 
 };
 
+#include <array>
+
 class PRCWriter
 {
 	oPRCFile _prcFile;
 
 	uint32_t addMaterial(int rgba)
 	{
-		RGBAColour ambient(1, 0, 0);
+		RGBAColour ambient(0.5, 0.0, 0.0);
 		RGBAColour diffuse(1, 0, 0);
-		RGBAColour emission(1, 0, 0);
-		RGBAColour specular(1, 0, 0);
+		RGBAColour emission(0.5, 0.0, 0.0);
+		RGBAColour specular(0.5, 0.0, 0.0);
 		double alpha = 1;
 		double shiness = 1;
 
@@ -171,46 +173,52 @@ public:
 	{
 		_prcFile.begingroup("mesh");
 
-		PRC3DTess *tess = new PRC3DTess();
+		uint32_t nP = mesh.GetVertexCount();
+		uint32_t nN = mesh.GetVertexCount();
 
-		tess->coordinates.reserve((size_t)mesh.GetVertexCount());
-		tess->normal_coordinate.reserve((size_t)mesh.GetVertexCount());
+		auto P = new double[nP][3];
+		auto N = new double[nP][3];
+
 		for (int i = 0; i < mesh.GetVertexCount(); i++)
 		{
 			auto v = mesh.GetVertex(i);
-			tess->coordinates.push_back(v.X);
-			tess->coordinates.push_back(v.Y);
-			tess->coordinates.push_back(v.Z);
+			P[i][0] = v.X;
+			P[i][1] = v.Y;
+			P[i][2] = v.Z;
 
 			auto n = mesh.GetNormal(i);
 
-			tess->normal_coordinate.push_back(n.X);
-			tess->normal_coordinate.push_back(n.Y);
-			tess->normal_coordinate.push_back(n.Z);
+			N[i][0] = n.X;
+			N[i][1] = n.Y;
+			N[i][2] = n.Z;
 		}
 
-		auto faceIndices = mesh.GetFaceIndices();
+		auto indices = mesh.GetFaceIndices();
+		uint32_t nI = indices.size() / 3;
+		auto PI = new uint32_t[nI][3];
 
-		PRCTessFace *tessFace = new PRCTessFace();
-		tessFace->number_of_texture_coordinate_indexes = 0;
-		tessFace->used_entities_flag |= PRC_FACETESSDATA_Triangle;
-		tessFace->start_triangulated = 0;
-		tessFace->is_rgba = false;
+		auto& NI = PI;
 
-		int color = mesh.GetFaceColor(0);
-		for (auto it = faceIndices.cbegin(); it != faceIndices.cend(); ++it)
+		int i = 0;
+		for (auto it = indices.cbegin(); it != indices.cend();)
 		{
-			tess->triangulated_index.push_back(*it);
+			PI[i][0] = (uint32_t)*it++;
+			PI[i][1] = (uint32_t)*it++;
+			PI[i++][2] = (uint32_t)*it++;
 		}
 
-		tessFace->sizes_triangulated.push_back(faceIndices.size() / 3);
-
-		tess->addTessFace(tessFace);
-		tess->has_faces = true;
-
-		const uint32_t tess_index = _prcFile.add3DTess(tess);
-
+		auto color = mesh.GetFaceColor(0);
 		auto styleIndex = addMaterial(color);
+
+		const uint32_t tess_index = _prcFile.createTriangleMesh(
+			nP, 
+			P,
+			nI,
+			PI, 
+			styleIndex, 
+			nN, 
+			N,
+			NI, 0, NULL, NULL, 0, NULL, NULL, 0, NULL, NULL, 0);
 
 		_prcFile.useMesh(tess_index, styleIndex);
 
@@ -270,7 +278,7 @@ bool Create3DPdf(const char *filepdf, const char *fileprc)
 
 #define NS2VIEWS 7
 	HPDF_Dict views[NS2VIEWS + 1];
-	const char *view_names[] = { 
+	const char *view_names[] = {
 		"Front perspective ('1','H')",
 		"Back perspective ('2')",
 		"Right perspective ('3')",
@@ -280,12 +288,12 @@ bool Create3DPdf(const char *filepdf, const char *fileprc)
 		"Oblique perspective ('7')" };
 
 	const float view_c2c[][3] = { { 0., 0., 1. },
-		{ 0., 0., -1. },
-		{ -1., 0., 0. },
-		{ 1., 0., 0. },
-		{ 0., 1., 0. },
-		{ 0., -1., 0. },
-		{ -1., 1., -1. } };
+	{ 0., 0., -1. },
+	{ -1., 0., 0. },
+	{ 1., 0., 0. },
+	{ 0., 1., 0. },
+	{ 0., -1., 0. },
+	{ -1., 1., -1. } };
 
 	const float view_roll[] = { 0., 180., 90., -90., 0., 0., 60. };
 
