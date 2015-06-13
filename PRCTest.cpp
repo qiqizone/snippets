@@ -1,6 +1,8 @@
 
 #include "libPRC\oPRCFile.h"
 
+//http://fossies.org/dox/mathgl-2.3.3/oPRCFile_8cc_source.html
+
 struct Vector3
 {
 	float X, Y, Z;
@@ -167,6 +169,8 @@ class PRCWriter
 public:
 	void addMesh(const IMesh& mesh)
 	{
+		_prcFile.begingroup("mesh");
+
 		PRC3DTess *tess = new PRC3DTess();
 
 		tess->coordinates.reserve((size_t)mesh.GetVertexCount());
@@ -191,9 +195,7 @@ public:
 		tessFace->number_of_texture_coordinate_indexes = 0;
 		tessFace->used_entities_flag |= PRC_FACETESSDATA_Triangle;
 		tessFace->start_triangulated = 0;
-		tessFace->sizes_triangulated.push_back(faceIndices.size());
 		tessFace->is_rgba = false;
-
 
 		int color = mesh.GetFaceColor(0);
 		for (auto it = faceIndices.cbegin(); it != faceIndices.cend(); ++it)
@@ -201,14 +203,14 @@ public:
 			tess->triangulated_index.push_back(*it);
 		}
 
+		tessFace->sizes_triangulated.push_back(faceIndices.size() / 3);
+
 		tess->addTessFace(tessFace);
 		tess->has_faces = true;
 
 		const uint32_t tess_index = _prcFile.add3DTess(tess);
 
 		auto styleIndex = addMaterial(color);
-
-		_prcFile.begingroup("mesh");
 
 		_prcFile.useMesh(tess_index, styleIndex);
 
@@ -221,13 +223,142 @@ public:
 	{
 
 	}
+
+	~PRCWriter()
+	{
+		_prcFile.finish();
+	}
 };
+
+
+#include <hpdf.h>
+#include <hpdf_conf.h>
+#include <hpdf_u3d.h>
+#include <hpdf_annotation.h>
+
+
+bool Create3DPdf(const char *filepdf, const char *fileprc)
+{
+	typedef struct
+	{
+		double x, y, z;
+	} XYZ;
+
+	float _rcleft(0),
+		_rctop(0),
+		_rcwidth(600),
+		_rcheight(600),
+		_bgr(0.2f), // OSG default clear color: (.2, .2, .4)
+		_bgg(0.2f),
+		_bgb(0.4f);
+
+	HPDF_Rect rect = { _rcleft, _rctop, _rcwidth, _rcheight };
+
+	HPDF_Doc pdf = HPDF_New(NULL, NULL);
+	if (!pdf)
+	{
+		printf("error: cannot create PdfDoc object\n");
+		return false;
+	}
+
+	HPDF_Page page = HPDF_AddPage(pdf);
+
+	HPDF_Page_SetWidth(page, _rcwidth);
+	HPDF_Page_SetHeight(page, _rcheight);
+
+	HPDF_U3D u3d = HPDF_LoadU3DFromFile(pdf, fileprc);
+
+#define NS2VIEWS 7
+	HPDF_Dict views[NS2VIEWS + 1];
+	const char *view_names[] = { 
+		"Front perspective ('1','H')",
+		"Back perspective ('2')",
+		"Right perspective ('3')",
+		"Left perspective ('4')",
+		"Bottom perspective ('5')",
+		"Top perspective ('6')",
+		"Oblique perspective ('7')" };
+
+	const float view_c2c[][3] = { { 0., 0., 1. },
+		{ 0., 0., -1. },
+		{ -1., 0., 0. },
+		{ 1., 0., 0. },
+		{ 0., 1., 0. },
+		{ 0., -1., 0. },
+		{ -1., 1., -1. } };
+
+	const float view_roll[] = { 0., 180., 90., -90., 0., 0., 60. };
+
+	// query camera point to rotate about - sometimes not the same as focus point
+	XYZ pr;
+	pr.x = 0;
+	pr.y = 0;
+	pr.z = 0;
+
+	// camera focus point
+	XYZ focus;
+	focus.x = 0;
+	focus.y = 0;
+	focus.z = 0;
+
+	float camrot = 5.0;
+
+	// create views
+	for (int iv = 0; iv < NS2VIEWS; iv++)
+	{
+		views[iv] = HPDF_Create3DView(u3d->mmgr, view_names[iv]);
+		HPDF_3DView_SetCamera(views[iv], 0., 0., 0.,
+			view_c2c[iv][0], view_c2c[iv][1], view_c2c[iv][2],
+			camrot, view_roll[iv]);
+		HPDF_3DView_SetPerspectiveProjection(views[iv], 45.0);
+		HPDF_3DView_SetBackgroundColor(views[iv], _bgr, _bgg, _bgb);
+		HPDF_3DView_SetLighting(views[iv], "White");
+
+		HPDF_U3D_Add3DView(u3d, views[iv]);
+	}
+
+	// add a psuedo-orthographic for slicing (actually perspective with point at infinity)
+	views[NS2VIEWS] = HPDF_Create3DView(u3d->mmgr, "Orthgraphic slicing view");
+	HPDF_3DView_SetCamera(views[NS2VIEWS], 0., 0., 0.,
+		view_c2c[0][0], view_c2c[0][1], view_c2c[0][2],
+		camrot*82.70f, view_roll[0]);
+	HPDF_3DView_SetPerspectiveProjection(views[NS2VIEWS], 0.3333f);
+	//HPDF_3DView_SetOrthogonalProjection(views[NS2VIEWS], 45.0/1000.0);
+	HPDF_3DView_SetBackgroundColor(views[NS2VIEWS], _bgr, _bgg, _bgb);
+	HPDF_3DView_SetLighting(views[NS2VIEWS], "White");
+	HPDF_U3D_Add3DView(u3d, views[NS2VIEWS]);
+
+
+	HPDF_U3D_SetDefault3DView(u3d, "Front perspective");
+
+	//  Create annotation
+	//annot = HPDF_Page_Create3DAnnot(page, rect, HPDF_TRUE, HPDF_FALSE, u3d, NULL);
+	HPDF_Annotation annot = HPDF_Page_Create3DAnnot(page, rect, u3d);
+	// make the toolbar appear by default
+
+	// HPDF_Dict action = (HPDF_Dict)HPDF_Dict_GetItem (annot, "3DA", HPDF_OCLASS_DICT);
+	// HPDF_Dict_AddBoolean (action, "TB", HPDF_TRUE);
+
+	// save the document to a file 
+	HPDF_SaveToFile(pdf, filepdf);
+
+	// clean up
+	HPDF_Free(pdf);
+
+	return true;
+}
 
 void main(void)
 {
-	std::ofstream ostream("D:\\dev\\libs\\libPRC\\Debug\\test.prc");
-	PRCWriter prcWriter(ostream);
+	std::ofstream ostream("D:\\dev\\libs\\libPRC\\Debug\\test.prc", std::ios_base::out | std::ios_base::binary);
 
-	Box box;
-	prcWriter.addMesh(box);
+	{
+		PRCWriter prcWriter(ostream);
+		Box box;
+		prcWriter.addMesh(box);
+	}
+
+	ostream.close();
+
+	Create3DPdf("D:\\dev\\libs\\libPRC\\Debug\\test.pdf", "D:\\dev\\libs\\libPRC\\Debug\\test.prc");
 }
