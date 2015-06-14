@@ -58,6 +58,8 @@ public:
 	virtual void SetFaceColor(int color) = 0;
 	virtual void AddEdge(const std::vector<int>& indices) = 0;
 	virtual void AddInstance(const gp_Trsf& transform) = 0;
+
+	virtual void Flush() = 0;
 };
 
 class PRCShape : public IBRep
@@ -73,10 +75,10 @@ class PRCShape : public IBRep
 		double g = color.Green();
 		double b = color.Blue();
 
-		RGBAColour ambient(r, g, b);
+		RGBAColour ambient(r / 3, g / 3, b / 3);
 		RGBAColour diffuse(r, g, b);
-		RGBAColour emission(r, g, b);
-		RGBAColour specular(r, g, b);
+		RGBAColour emission(r / 3, g / 3, b / 3);
+		RGBAColour specular(0, 0, 0, 0);
 		double alpha = 1;
 		double shiness = 1;
 
@@ -91,6 +93,8 @@ class PRCShape : public IBRep
 
 	std::vector<int>* _indices; //vi, ni, vi, ni, vi, ni
 	std::map<int, std::vector<int>> _faces;
+	std::vector<gp_Trsf> _instances;
+	std::vector<std::vector<int>> _edges;
 public:
 
 	virtual int AddVertex(const gp_Pnt& pnt)
@@ -117,9 +121,15 @@ public:
 
 	virtual void AddEdge(const std::vector<int>& indices)
 	{
+		_edges.push_back(indices);
 	}
 
 	virtual void AddInstance(const gp_Trsf& transform)
+	{
+		_instances.push_back(transform);
+	}
+
+	virtual void Flush()
 	{
 		uint32_t nP = _points.size();
 		auto P = new double[nP][3];
@@ -144,12 +154,8 @@ public:
 			N[i][2] = n.Z();
 		}
 
-		_prcFile.begingroup("mesh", NULL, NULL /*Todo: transform */);
-
 		for (auto it = _faces.cbegin(); it != _faces.cend(); it++)
 		{
-			_prcFile.begingroup("face");
-
 			const auto& indices = it->second;
 
 			uint32_t nI = indices.size() / 6;
@@ -176,17 +182,53 @@ public:
 				P,
 				nI,
 				PI,
-				m1,
+				styleIndex,
 				nN,
 				N,
 				NI,
 				0, NULL, NULL, 0, NULL, NULL, 0, NULL, NULL, 25.8419 /* arccos(0.9)*/);
 
-			_prcFile.useMesh(tess_index, styleIndex);
-			_prcFile.endgroup();
+			for (auto transform : _instances)
+			{
+				double m[16];
+				m[0] = transform.Value(1, 1); m[4] = transform.Value(1, 2); m[8] = transform.Value(1, 3);  m[12] = transform.Value(1, 4);
+				m[1] = transform.Value(2, 1); m[5] = transform.Value(2, 2); m[9] = transform.Value(2, 3);  m[13] = transform.Value(2, 4);
+				m[2] = transform.Value(3, 1); m[6] = transform.Value(3, 2); m[10] = transform.Value(3, 3); m[14] = transform.Value(3, 4);
+				m[3] = 0;                     m[7] = 0;                     m[11] = 0;                     m[15] = 1;
+
+				_prcFile.begingroup("face", NULL, m);
+				_prcFile.useMesh(tess_index, styleIndex);
+				_prcFile.endgroup();
+			}
 		}
 
-		_prcFile.endgroup();
+		for (auto transform : _instances)
+		{
+			double m[16];
+			m[0] = transform.Value(1, 1); m[4] = transform.Value(1, 2); m[8] = transform.Value(1, 3);  m[12] = transform.Value(1, 4);
+			m[1] = transform.Value(2, 1); m[5] = transform.Value(2, 2); m[9] = transform.Value(2, 3);  m[13] = transform.Value(2, 4);
+			m[2] = transform.Value(3, 1); m[6] = transform.Value(3, 2); m[10] = transform.Value(3, 3); m[14] = transform.Value(3, 4);
+			m[3] = 0;                     m[7] = 0;                     m[11] = 0;                     m[15] = 1;
+
+			_prcFile.begingroup("edges", NULL, m);
+
+			for (auto edges : _edges)
+			{
+				uint32_t nP = edges.size() - 1;
+				auto P = new double[nP][3];
+
+				for (uint32_t i = 0; i < nP; i++)
+				{
+					P[i][0] = _points[edges[i]].X();
+					P[i][1] = _points[edges[i]].Y();
+					P[i][2] = _points[edges[i]].Z();
+				}
+
+				_prcFile.addLine(nP, P, RGBAColour(0, 0, 0));
+			}
+
+			_prcFile.endgroup();
+		}
 	}
 
 public:
@@ -207,18 +249,7 @@ public:
 
 bool Create3DPdf(const char *filepdf, const char *fileprc)
 {
-	typedef struct
-	{
-		double x, y, z;
-	} XYZ;
-
-	float _rcleft(0),
-		_rctop(0),
-		_rcwidth(600),
-		_rcheight(600),
-		_bgr(0.2f), // OSG default clear color: (.2, .2, .4)
-		_bgg(0.2f),
-		_bgb(0.4f);
+	float _rcleft(0), _rctop(0), _rcwidth(600), _rcheight(600), _bgr(1), _bgg(1), _bgb(1);
 
 	HPDF_Rect rect = { _rcleft, _rctop, _rcwidth, _rcheight };
 
@@ -236,68 +267,8 @@ bool Create3DPdf(const char *filepdf, const char *fileprc)
 
 	HPDF_U3D u3d = HPDF_LoadU3DFromFile(pdf, fileprc);
 
-#define NS2VIEWS 7
-	HPDF_Dict views[NS2VIEWS + 1];
-	const char *view_names[] = {
-		"Front perspective ('1','H')",
-		"Back perspective ('2')",
-		"Right perspective ('3')",
-		"Left perspective ('4')",
-		"Bottom perspective ('5')",
-		"Top perspective ('6')",
-		"Oblique perspective ('7')" };
 
-	const float view_c2c[][3] = { { 0., 0., 1. },
-	{ 0., 0., -1. },
-	{ -1., 0., 0. },
-	{ 1., 0., 0. },
-	{ 0., 1., 0. },
-	{ 0., -1., 0. },
-	{ -1., 1., -1. } };
-
-	const float view_roll[] = { 0., 180., 90., -90., 0., 0., 60. };
-
-	// query camera point to rotate about - sometimes not the same as focus point
-	XYZ pr;
-	pr.x = 0;
-	pr.y = 0;
-	pr.z = 0;
-
-	// camera focus point
-	XYZ focus;
-	focus.x = 0;
-	focus.y = 0;
-	focus.z = 0;
-
-	float camrot = 5.0;
-
-	// create views
-	for (int iv = 0; iv < NS2VIEWS; iv++)
-	{
-		views[iv] = HPDF_Create3DView(u3d->mmgr, view_names[iv]);
-		HPDF_3DView_SetCamera(views[iv], 0., 0., 0.,
-			view_c2c[iv][0], view_c2c[iv][1], view_c2c[iv][2],
-			camrot, view_roll[iv]);
-		HPDF_3DView_SetPerspectiveProjection(views[iv], 45.0);
-		HPDF_3DView_SetBackgroundColor(views[iv], _bgr, _bgg, _bgb);
-		HPDF_3DView_SetLighting(views[iv], "White");
-
-		HPDF_U3D_Add3DView(u3d, views[iv]);
-	}
-
-	// add a psuedo-orthographic for slicing (actually perspective with point at infinity)
-	views[NS2VIEWS] = HPDF_Create3DView(u3d->mmgr, "Orthgraphic slicing view");
-	HPDF_3DView_SetCamera(views[NS2VIEWS], 0., 0., 0.,
-		view_c2c[0][0], view_c2c[0][1], view_c2c[0][2],
-		camrot*82.70f, view_roll[0]);
-	HPDF_3DView_SetPerspectiveProjection(views[NS2VIEWS], 0.3333f);
-	//HPDF_3DView_SetOrthogonalProjection(views[NS2VIEWS], 45.0/1000.0);
-	HPDF_3DView_SetBackgroundColor(views[NS2VIEWS], _bgr, _bgg, _bgb);
-	HPDF_3DView_SetLighting(views[NS2VIEWS], "White");
-	HPDF_U3D_Add3DView(u3d, views[NS2VIEWS]);
-
-
-	HPDF_U3D_SetDefault3DView(u3d, "Front perspective");
+	HPDF_U3D_SetDefault3DView(u3d, "Default");
 
 	//  Create annotation
 	//annot = HPDF_Page_Create3DAnnot(page, rect, HPDF_TRUE, HPDF_FALSE, u3d, NULL);
@@ -730,7 +701,10 @@ void main(void)
 	auto step = L"D:\\dev\\libs\\libPRC\\Debug\\test.stp";
 
 	{
-		Step2Prc::ImportFromStepFile(step, [&prcFile] { return new PRCShape(prcFile); });
+		auto result = Step2Prc::ImportFromStepFile(step, [&prcFile] { return new PRCShape(prcFile); });
+
+		for (auto it : result)
+			it->Flush();
 	}
 
 	prcFile.finish();
