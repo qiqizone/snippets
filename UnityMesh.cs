@@ -14,8 +14,7 @@ public class DynamicMesh : MonoBehaviour
     {
         BRep[] breps;
 
-        //C:\Users\Public\Documents\Unity Projects\Test
-        using (var stream = System.IO.File.OpenRead("8920980000.stp.brep"))
+        using (var stream = System.IO.File.OpenRead("test.stp.brep"))
             //using (var decompressed = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress))
             breps = BRep.Deserialize(stream);
 
@@ -180,14 +179,6 @@ public class DynamicMesh : MonoBehaviour
         return translate;
     }
 
-    /// <summary>
-    /// Extract rotation quaternion from transform matrix.
-    /// </summary>
-    /// <param name="matrix">Transform matrix. This parameter is passed by reference
-    /// to improve performance; no changes will be made to it.</param>
-    /// <returns>
-    /// Quaternion representation of rotation transform.
-    /// </returns>
     public static Quaternion ExtractRotationFromMatrix(float[] m)
     {
         //var matrix = new Matrix4x4()
@@ -198,6 +189,7 @@ public class DynamicMesh : MonoBehaviour
         //    m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15]
 
         //};
+        
         var matrix = new Matrix4x4()
         {
             m00 = m[0],
